@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>auto_aim_ros2</name>
+  <version>0.1.0</version>
+  <description>ROS 2 wrapper for the sp_vision_25 armor detector.</description>
+  <maintainer email="robomaster@example.com">RoboMaster Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>auto_aim_interfaces</depend>
+  <depend>cv_bridge</depend>
+  <depend>rclcpp</depend>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>serical_device_ros2</exec_depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>hik_camera</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

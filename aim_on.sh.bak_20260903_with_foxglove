@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Orin local launcher for auto aim, local preview, and Foxglove Bridge.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AIM_SCRIPT="${SCRIPT_DIR}/scripts/aim"
+BUILD_ROOT="${AUTOAIM_BUILD_ROOT:-${HOME}/game_26_build/ros2}"
+INSTALL_SETUP="${BUILD_ROOT}/install/setup.bash"
+
+if [[ ! -f "${AIM_SCRIPT}" ]]; then
+  echo "找不到瞄准脚本: ${AIM_SCRIPT}" >&2
+  echo "请把本脚本放到 game_26_current/ 目录下" >&2
+  exit 2
+fi
+
+# No argument means fire mode, but scripts/aim still requires the operator to
+# type AIM and FIRE before any firing output is enabled.
+ACTION="${1:-fire}"
+case "${ACTION}" in
+  on|safe|fire|status|build|calibrate|extrinsic-capture) ;;
+  -h|--help|help)
+    cat <<'EOF'
+用法: ./aim_on.sh [fire|on|safe|status|build|calibrate|extrinsic-capture]
+  fire      开启云台跟随和连发（默认；仍需输入 AIM 和 FIRE）
+  on        开启云台跟随，不开火
+  safe      预览模式，云台不动
+  status    查看相机、串口、自瞄和 Foxglove 状态
+  build     colcon 编译
+  calibrate 标定相机（需要桌面 GUI）
+
+可选环境变量:
+  AIM_NO_DISPLAY=1       不打开 Orin 本机 OpenCV 预览窗口
+  AIM_NO_FOXGLOVE=1      不启动 Foxglove Bridge
+  AIM_DISPLAY=:0         指定 Orin 桌面 DISPLAY
+  AIM_FOXGLOVE_ADDRESS=  Bridge 监听地址，默认 192.168.0.37
+  AIM_FOXGLOVE_PORT=     Bridge 端口，默认 8765
+EOF
+    exit 0
+    ;;
+  *)
+    echo "未知动作: ${ACTION}" >&2
+    exit 1
+    ;;
+esac
+
+RUNTIME_ACTION=false
+if [[ "${ACTION}" == "on" || "${ACTION}" == "safe" || "${ACTION}" == "fire" ]]; then
+  RUNTIME_ACTION=true
+fi
+
+build_if_stale() {
+  local auto_aim_binary="${BUILD_ROOT}/install/auto_aim_ros2/lib/auto_aim_ros2/auto_aim_node"
+  local hik_binary="${BUILD_ROOT}/install/hik_camera/lib/hik_camera/hik_camera_node"
+  local needs_build=false
+
+  if [[ ! -x "${auto_aim_binary}" || ! -x "${hik_binary}" ]]; then
+    needs_build=true
+  elif find \
+      "${SCRIPT_DIR}/src/auto_aim_ros2" \
+      "${SCRIPT_DIR}/sp_vision_25" \
+      -type f \( -name '*.cpp' -o -name '*.hpp' -o -name 'CMakeLists.txt' \) \
+      -newer "${auto_aim_binary}" -print -quit | grep -q .; then
+    needs_build=true
+  elif find \
+      "${SCRIPT_DIR}/src/ros2-hik-camera" \
+      -type f \( -name '*.cpp' -o -name '*.hpp' -o -name 'CMakeLists.txt' \) \
+      -newer "${hik_binary}" -print -quit | grep -q .; then
+    needs_build=true
+  fi
+
+  if ${needs_build}; then
+    echo "检测到源码比 Orin 中的运行程序新，先重新编译。"
+    bash "${AIM_SCRIPT}" build
+  fi
+}
+
+VIEWER_PID=""
+BRIDGE_PID=""
+
+cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  if [[ -n "${VIEWER_PID}" ]] && kill -0 "${VIEWER_PID}" 2>/dev/null; then
+    kill "${VIEWER_PID}" 2>/dev/null || true
+    wait "${VIEWER_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${BRIDGE_PID}" ]] && kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+    kill "${BRIDGE_PID}" 2>/dev/null || true
+    wait "${BRIDGE_PID}" 2>/dev/null || true
+  fi
+  exit "${exit_code}"
+}
+trap cleanup EXIT INT TERM
+
+start_local_preview() {
+  [[ -z "${AIM_NO_DISPLAY:-}" ]] || return 0
+
+  local viewer_script="${SCRIPT_DIR}/scripts/debug_image_viewer.py"
+  if [[ ! -f "${viewer_script}" ]]; then
+    echo "警告: 找不到本机预览程序 ${viewer_script}" >&2
+    return 0
+  fi
+  if pgrep -u "$(id -u)" -f "${viewer_script}" >/dev/null 2>&1; then
+    echo "Orin 本机图像预览已经在运行。"
+    return 0
+  fi
+
+  local aim_display="${AIM_DISPLAY:-:0}"
+  (
+    sleep 3
+    export DISPLAY="${aim_display}"
+    export XAUTHORITY="/run/user/$(id -u)/gdm/Xauthority"
+    export ROS_LOCALHOST_ONLY=1
+    set +u
+    source /opt/ros/humble/setup.bash
+    source "${INSTALL_SETUP}"
+    set -u
+    exec python3 "${viewer_script}"
+  ) > /tmp/autoaim_debug_viewer.log 2>&1 &
+  VIEWER_PID=$!
+  echo "Orin 本机预览正在启动（PID ${VIEWER_PID}）。"
+}
+
+start_foxglove_bridge() {
+  [[ -z "${AIM_NO_FOXGLOVE:-}" ]] || return 0
+
+  local address="${AIM_FOXGLOVE_ADDRESS:-192.168.0.37}"
+  local port="${AIM_FOXGLOVE_PORT:-8765}"
+  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    echo "无效的 Foxglove 端口: ${port}" >&2
+    exit 8
+  fi
+
+  if ss -ltnH "sport = :${port}" | grep -q .; then
+    echo "Foxglove Bridge 已在端口 ${port} 运行。"
+    echo "Windows 连接: ws://${address}:${port}"
+    return 0
+  fi
+
+  set +u
+  source /opt/ros/humble/setup.bash
+  [[ -f "${INSTALL_SETUP}" ]] && source "${INSTALL_SETUP}"
+  set -u
+  if ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+    echo "警告: Orin 尚未安装 Foxglove Bridge。" >&2
+    echo "请先执行: sudo apt install ros-humble-foxglove-bridge" >&2
+    return 0
+  fi
+
+  (
+    export ROS_LOCALHOST_ONLY=1
+    exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml \
+      address:="${address}" port:="${port}"
+  ) > /tmp/foxglove_bridge.log 2>&1 &
+  BRIDGE_PID=$!
+  sleep 1
+  if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+    echo "Foxglove Bridge 启动失败，日志如下：" >&2
+    sed -n '1,120p' /tmp/foxglove_bridge.log >&2
+    exit 9
+  fi
+  echo "Foxglove Bridge 已启动（PID ${BRIDGE_PID}）。"
+  echo "Windows 连接: ws://${address}:${port}"
+}
+
+if [[ "${ACTION}" == "status" ]]; then
+  bash "${AIM_SCRIPT}" status
+  if ss -ltnH 'sport = :8765' | grep -q .; then
+    echo 'Foxglove:    running (ws://192.168.0.37:8765)'
+  else
+    echo 'Foxglove:    stopped'
+  fi
+  exit 0
+fi
+
+if ${RUNTIME_ACTION}; then
+  build_if_stale
+  start_foxglove_bridge
+  start_local_preview
+fi
+
+# scripts/aim owns the explicit AIM/FIRE confirmations and the foreground ROS
+# launch. Stopping it with Ctrl+C also closes processes started by this script.
+bash "${AIM_SCRIPT}" "${ACTION}"

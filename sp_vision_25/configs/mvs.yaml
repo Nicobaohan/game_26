@@ -1,0 +1,143 @@
+# enemy_color: "red"
+enemy_color: "blue"
+
+
+#####-----神经网络参数-----#####
+yolo_name: yolov5
+classify_model: assets/tiny_resnet.onnx
+yolo11_model_path: assets/yolo11.xml
+yolov8_model_path: assets/yolov8.xml
+yolov5_model_path: assets/yolov5.xml
+device: GPU
+min_confidence: 0.8
+use_traditional: true
+
+#####-----ROI-----#####
+roi: 
+  x: 420
+  y: 50
+  width: 600
+  height: 600
+
+use_roi: false
+
+#####-----USB相机参数-----#####
+image_width: 640
+image_height: 360
+new_image_width: 1280
+new_image_height: 720
+fov_h: 57.7 #87.7
+fov_v: 56.7 
+new_fov_h: 37 #67
+new_fov_v: 40.9
+usb_frame_rate: 60
+usb_exposure: 305 #1-80000______250
+new_usb_exposure: 320
+usb_gamma: 160
+usb_gain: 10 #0-96
+
+#####-----工业相机参数-----#####
+camera_name: "hikrobot"
+exposure_ms: 2
+gain: 16
+vid_pid: "2bdf:0001"
+
+#####-----传统方法参数-----#####
+threshold: 150
+max_angle_error: 45 # degree
+min_lightbar_ratio: 1.5
+max_lightbar_ratio: 20
+min_lightbar_length: 8
+min_armor_ratio: 1
+max_armor_ratio: 5
+max_side_ratio: 1.5
+max_rectangular_error: 25 # degree
+min_confidence: 0.8
+
+#####-----cboard参数-----#####
+quaternion_canid: 0x01
+bullet_speed_canid: 0x110
+send_canid: 0xff
+can_interface: "can0"
+
+#####-----tracker参数-----#####
+min_detect_count: 5
+max_temp_lost_count: 15
+outpost_max_temp_lost_count: 75
+
+#####-----aimer参数-----#####
+yaw_offset: -2.5 # degree -2.5
+pitch_offset: 0  # degree 2
+comming_angle: 70 # degree
+leaving_angle: 30 # degree
+decision_speed: 7 # rad/s
+high_speed_delay_time: 0.066 # s
+low_speed_delay_time: 0.015 # s
+
+#####-----shooter参数-----#####
+first_tolerance: 3 # 近距离射击容差，degree
+# 目标距离 <= judge_distance 时允许的 yaw/pitch 误差
+# 必须在真实打靶中按近距离场景测量，不能直接写死
+second_tolerance: 2 # 远距离射击容差，degree
+# 目标距离 > judge_distance 时允许的 yaw/pitch 误差
+# 远距离下由弹道和散布决定，必须在实测中修正
+judge_distance: 2 # 距离判断阈值
+# 这是“近距离 / 远距离”判定边界
+# 必须结合弹速、散布和装甲板大小一起实测
+auto_fire: true # 是否由自瞄控制射击
+# true: 允许视觉方向下发射； false: 仅作瞄准，不发射
+fire_cooldown: 0.25 # 最小发射间隔（s）
+# 由发射机构实测确定，防止连发、热量和弹速波动
+min_target_lock_frames: 5 # 目标锁定最小连续有效帧数
+# 只有在连续 N 帧稳定后才允许开火
+max_sensor_stale_time: 0.05 # 传感器数据最大陈旧时间（s）
+# 监控相机、IMU、机器人状态是否过期
+# 过期则判定为不安全，不开火
+max_pnp_residual: 1.5 # PnP 重投影误差阈值（pixel）
+# 由物理成像误差决定
+# 误差过大说明目标观测不可信，不允许射击
+max_track_uncertainty: 0.2 # 跟踪不确定度阈值
+# 若目标状态不稳、EKF 方差大，则禁止射击
+
+#####-----decider参数-----#####
+mode: 1
+
+#####-----工业相机标定参数-----#####
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+# 重投影误差: 0.1322px
+camera_matrix: [1776.9477196851155, 0, 756.31235265560952, 0, 1776.0591253569607, 566.16539069551641, 0, 0, 1]
+distort_coeffs: [-0.08382326954462313, 0.097449270330296239, -0.0012558283068959985, 0.0037372210254148081, 0]
+
+R_camera2gimbal: [0, 0, 1, -1, 0, 0, 0, -1, 0]
+t_camera2gimbal: [0.1, 0, 0.05]
+
+
+#####-----buff_detector参数-----#####
+detect:
+  contrast: 1
+  brightness: 
+    blue: -120
+    red: -100
+  brightness_threshold:
+    blue: 120
+    red: 80
+  morphology_size:
+    blue: 3
+    red: 2
+  dilate_size: 1
+  # canny_low_threshold: 100
+  # canny_high_threshold: 180
+  # approx_epsilon: 1.0
+  R_contours_min_area: 1
+  R_contours_max_area: 600
+  fanblades_head_contours_min_area: 300
+  fanblades_head_contours_max_area: 8000
+  fanblades_body_contours_min_area: 1000
+  fanblades_body_contours_max_area: 4000
+  standard_fanblade_path: ./assets/standard_fanblade.jpg
+
+#####-----buff_aimer参数-----#####
+aim_time: 0.200 # s
+wait_time: 0.050 # s
+predict_time: 0.300 # s

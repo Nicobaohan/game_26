@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# aim_on.sh — hero 本地一键启动自动瞄准
+# 既然 hero 就是 Orin，直接本地跑 scripts/aim，不需要 SSH 中转。
+# 对标 Windows 的 aim_on.cmd，但省去 SSH + 密码 + 交互确认，直接启动。
+#
+# 用法:
+#   ./aim_on.sh                 # = on，开启云台跟随（不开火）
+#   ./aim_on.sh on              # 同上
+#   ./aim_on.sh safe            # 预览模式（云台不动）
+#   ./aim_on.sh fire            # 三连发（危险，慎用）
+#   ./aim_on.sh status          # 查看相机/串口/进程状态
+#   ./aim_on.sh build           # colcon 编译
+#   ./aim_on.sh calibrate       # 标定相机（需桌面 GUI）
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AIM_SCRIPT="${SCRIPT_DIR}/scripts/aim"
+
+if [[ ! -f "${AIM_SCRIPT}" ]]; then
+  echo "找不到瞄准脚本: ${AIM_SCRIPT}" >&2
+  echo "请把本脚本放到 game_26_current/ 目录下" >&2
+  exit 2
+fi
+
+ACTION="${1:-on}"
+case "${ACTION}" in
+  on|safe|fire|status|build|calibrate|extrinsic-capture) ;;
+  -h|--help|help)
+    cat <<'EOF'
+用法: aim_on.sh [on|safe|fire|status|build|calibrate]
+  on        开启云台跟随（不开火），默认
+  safe      预览模式，云台不动
+  fire      三连发（危险，慎用）
+  status    查看相机/串口/进程状态
+  build     colcon 编译
+  calibrate 标定相机（需桌面 GUI）
+EOF
+    exit 0
+    ;;
+  *)
+    echo "未知动作: ${ACTION}（可选: on|safe|fire|status|build|calibrate）" >&2
+    exit 1
+    ;;
+esac
+
+# ── 预览窗口 ──
+# auto_aim_node 的 debug_image publisher 用 BEST_EFFORT QoS，
+# rqt_image_view 默认 RELIABLE 订阅不兼容，用 debug_image_viewer.py 代替。
+#   AIM_NO_DISPLAY=1 → 不启动预览（纯无头）
+#   AIM_DISPLAY      → 自定义桌面号，默认 :0
+AIM_DISP="${AIM_DISPLAY:-:0}"
+PREVIEW_ENABLED=false
+if [[ -z "${AIM_NO_DISPLAY:-}" ]] && [[ "${ACTION}" == "on" || "${ACTION}" == "safe" || "${ACTION}" == "fire" ]]; then
+  PREVIEW_ENABLED=true
+fi
+
+# ── 启动预览 ──
+# 先杀掉残留的 viewer，防止重复开窗
+pkill -f 'debug_image_viewer.py' 2>/dev/null || true
+PREVIEW_PID=""
+if $PREVIEW_ENABLED; then
+  VIEWER_SCRIPT="${SCRIPT_DIR}/scripts/debug_image_viewer.py"
+  (
+    sleep 3
+    DISPLAY="${AIM_DISP}" \
+    XAUTHORITY="/run/user/$(id -u)/gdm/Xauthority" \
+    bash -c "source /opt/ros/humble/setup.bash 2>/dev/null; \
+             source ~/game_26_build/ros2/install/setup.bash 2>/dev/null; \
+             export ROS_LOCALHOST_ONLY=1; \
+             python3 '${VIEWER_SCRIPT}'" \
+      > /dev/null 2>&1 &
+    echo "预览 PID: $!" >&2
+  ) &
+  PREVIEW_PID=$!
+fi
+
+# ── 自动注入安全确认 ──
+# scripts/aim 的 on 模式要求输入 AIM，fire 要求 AIM+FIRE。
+# 既然是本地一键脚本，自动填入，省去手动交互。
+CONFIRM_INPUT=""
+case "${ACTION}" in
+  on)           CONFIRM_INPUT="AIM" ;;
+  fire)         CONFIRM_INPUT=$'AIM\nFIRE' ;;
+  *)            ;;  # safe/status/build/calibrate 不需要确认
+esac
+
+# ── 执行 ──
+if [[ -n "${CONFIRM_INPUT}" ]]; then
+  printf '%s\n' "${CONFIRM_INPUT}" | bash "${AIM_SCRIPT}" "${ACTION}"
+else
+  bash "${AIM_SCRIPT}" "${ACTION}"
+fi
+AIM_EXIT=$?
+
+# aim 退出后关闭预览
+if $PREVIEW_ENABLED; then
+  pkill -f 'debug_image_viewer.py' 2>/dev/null || true
+fi
+
+exit $AIM_EXIT

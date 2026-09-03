@@ -1,0 +1,32 @@
+# Build artifacts
+build/
+install/
+log/
+*.o
+*.so
+*.a
+
+# sp_vision build & assets
+sp_vision_25/build/
+sp_vision_25/logs/
+sp_vision_25/assets/
+*.onnx
+*.weights
+*.engine
+*.model
+*.pt
+*.pth
+
+# ROS
+__pycache__/
+*.pyc
+
+# Deploy markers
+.codex_deploy_managed
+
+# Windows env var artifacts
+$(ALLUSERSPROFILE)/
+
+# Misc
+*.log
+.DS_Store

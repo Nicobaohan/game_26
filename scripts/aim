@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VEHICLE_CONFIG="${PROJECT_ROOT}/config/autoaim_vehicle.env"
+BUILD_ROOT="${AUTOAIM_BUILD_ROOT:-${HOME}/game_26_build/ros2}"
+ROS_SETUP="/opt/ros/humble/setup.bash"
+HIK_SETUP="${HOME}/ros2_hik_ws/install/setup.bash"
+INSTALL_SETUP="${BUILD_ROOT}/install/setup.bash"
+
+if [[ -f "${VEHICLE_CONFIG}" ]]; then
+  # The repository owns this simple KEY=VALUE file.
+  # shellcheck disable=SC1090
+  source "${VEHICLE_CONFIG}"
+else
+  echo "Vehicle configuration not found: ${VEHICLE_CONFIG}" >&2
+  exit 2
+fi
+
+AUTOAIM_CAMERA_INFO_URL="${AUTOAIM_CAMERA_INFO_URL:-package://hik_camera/config/camera_info_vehicle.yaml}"
+AUTOAIM_CONFIG_PATH="${AUTOAIM_CONFIG_PATH:-configs/school.yaml}"
+AUTOAIM_LOCAL_ONLY="${AUTOAIM_LOCAL_ONLY:-1}"
+AUTOAIM_BOARD_SIZE="${AUTOAIM_BOARD_SIZE:-11x8}"
+AUTOAIM_SQUARE_SIZE="${AUTOAIM_SQUARE_SIZE:-0.020}"
+AUTOAIM_CAMERA_NAME="${AUTOAIM_CAMERA_NAME:-narrow_stereo}"
+AUTOAIM_CONTROL_FILTER_ALPHA="${AUTOAIM_CONTROL_FILTER_ALPHA:-0.25}"
+AUTOAIM_YAW_DEADBAND_DEG="${AUTOAIM_YAW_DEADBAND_DEG:-0.25}"
+AUTOAIM_PITCH_DEADBAND_DEG="${AUTOAIM_PITCH_DEADBAND_DEG:-0.20}"
+AUTOAIM_FIRE_HOLD_S="${AUTOAIM_FIRE_HOLD_S:-0.15}"
+AUTOAIM_FIRE_INTERVAL_S="${AUTOAIM_FIRE_INTERVAL_S:-0.5}"
+AUTOAIM_FIRE_SHOT_PERIOD_S="${AUTOAIM_FIRE_SHOT_PERIOD_S:-0.1}"
+AUTOAIM_FIRE_BURST_COUNT="${AUTOAIM_FIRE_BURST_COUNT:-3}"
+AUTOAIM_FIRE_YAW_TOLERANCE_DEG="${AUTOAIM_FIRE_YAW_TOLERANCE_DEG:-0.50}"
+AUTOAIM_FIRE_PITCH_TOLERANCE_DEG="${AUTOAIM_FIRE_PITCH_TOLERANCE_DEG:-0.50}"
+AUTOAIM_FIRE_MAX_YAW_VELOCITY_DEG_S="${AUTOAIM_FIRE_MAX_YAW_VELOCITY_DEG_S:-5.0}"
+AUTOAIM_FIRE_MAX_PITCH_VELOCITY_DEG_S="${AUTOAIM_FIRE_MAX_PITCH_VELOCITY_DEG_S:-5.0}"
+AUTOAIM_FIRE_MAX_REPROJECTION_ERROR_PX="${AUTOAIM_FIRE_MAX_REPROJECTION_ERROR_PX:-3.0}"
+
+usage() {
+  cat <<'EOF'
+Usage: bash scripts/aim COMMAND
+
+Commands:
+  build       Build the four ROS 2 packages into ~/game_26_build/ros2
+  calibrate   Open the camera calibration GUI (run inside NoMachine)
+  extrinsic-capture  Capture chessboard images paired with current IMU quaternions
+  safe        Start camera + serial + auto-aim in preview-only mode
+  on          Enable no-fire gimbal output after an explicit confirmation
+  fire        Enable gimbal output and burst fire after two confirmations
+  status      Check camera, serial device, build, and running process
+
+Stop a running launch with Ctrl+C.
+EOF
+}
+
+source_runtime() {
+  if [[ ! -f "${ROS_SETUP}" ]]; then
+    echo "ROS 2 Humble not found: ${ROS_SETUP}" >&2
+    exit 3
+  fi
+  # ROS-generated setup files legitimately probe optional unset variables.
+  set +u
+  # shellcheck disable=SC1090
+  source "${ROS_SETUP}"
+  if [[ -f "${HIK_SETUP}" ]]; then
+    # shellcheck disable=SC1090
+    source "${HIK_SETUP}"
+  fi
+  set -u
+}
+
+source_install() {
+  source_runtime
+  if [[ ! -f "${INSTALL_SETUP}" ]]; then
+    echo "Auto-aim has not been built yet: ${INSTALL_SETUP}" >&2
+    echo "Run: bash ${PROJECT_ROOT}/scripts/aim build" >&2
+    exit 4
+  fi
+  set +u
+  # shellcheck disable=SC1090
+  source "${INSTALL_SETUP}"
+  set -u
+}
+
+ensure_graphical_display() {
+  if [[ -n "${DISPLAY:-}" ]] && xwininfo -root >/dev/null 2>&1; then
+    return
+  fi
+
+  local desktop_display="${AUTOAIM_DISPLAY:-:0}"
+  local desktop_authority="${AUTOAIM_XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}"
+  if [[ -S "/tmp/.X11-unix/X${desktop_display#:}" && -r "${desktop_authority}" ]]; then
+    export DISPLAY="${desktop_display}"
+    export XAUTHORITY="${desktop_authority}"
+    if xwininfo -root >/dev/null 2>&1; then
+      echo "GUI display: ${DISPLAY} (desktop session detected)"
+      return
+    fi
+  fi
+
+  echo "Could not access a graphical desktop." >&2
+  echo "Connect to the Orin desktop with NoMachine, then run this command again." >&2
+  echo "For a non-default desktop, set AUTOAIM_DISPLAY and AUTOAIM_XAUTHORITY." >&2
+  exit 7
+}
+
+check_camera_config() {
+  local prefix='package://hik_camera/config/'
+  if [[ "${AUTOAIM_CAMERA_INFO_URL}" == "${prefix}"* ]]; then
+    local filename="${AUTOAIM_CAMERA_INFO_URL#${prefix}}"
+    local source_file="${PROJECT_ROOT}/src/ros2-hik-camera/config/${filename}"
+    if [[ ! -f "${source_file}" ]]; then
+      echo "Camera calibration file not found: ${source_file}" >&2
+      exit 5
+    fi
+  fi
+}
+
+check_not_running() {
+  if pgrep -f '/auto_aim_ros2/auto_aim_node' >/dev/null 2>&1; then
+    echo "An auto-aim node is already running. Stop it with Ctrl+C first." >&2
+    exit 6
+  fi
+  if pgrep -f '/hik_camera/hik_camera_node' >/dev/null 2>&1; then
+    echo "A Hik camera node is already running. Stop it with Ctrl+C first." >&2
+    exit 6
+  fi
+}
+
+build_workspace() {
+  check_not_running
+  source_runtime
+  mkdir -p "${BUILD_ROOT}/build" "${BUILD_ROOT}/install" "${BUILD_ROOT}/log"
+
+  echo "Project: ${PROJECT_ROOT}"
+  echo "Build:   ${BUILD_ROOT}"
+  colcon --log-base "${BUILD_ROOT}/log" build \
+    --base-paths "${PROJECT_ROOT}/src" \
+    --build-base "${BUILD_ROOT}/build" \
+    --install-base "${BUILD_ROOT}/install" \
+    --symlink-install \
+    --packages-select \
+      auto_aim_interfaces \
+      hik_camera \
+      serical_device_ros2 \
+      auto_aim_ros2 \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+  echo
+  echo "Build complete. Next: bash ${PROJECT_ROOT}/scripts/aim safe"
+}
+
+calibrate_camera() {
+  check_not_running
+  source_install
+  ensure_graphical_display
+
+  local marker
+  marker="$(mktemp)"
+  touch "${marker}"
+  echo "Board: ${AUTOAIM_BOARD_SIZE}, square: ${AUTOAIM_SQUARE_SIZE} m"
+  echo "In the GUI: collect samples -> CALIBRATE -> SAVE, then close with Ctrl+C."
+
+  set +e
+  ros2 launch auto_aim_ros2 camera_calibration.launch.py \
+    board_size:="${AUTOAIM_BOARD_SIZE}" \
+    square_size:="${AUTOAIM_SQUARE_SIZE}" \
+    camera_name:="${AUTOAIM_CAMERA_NAME}" \
+    local_only:="${AUTOAIM_LOCAL_ONLY}"
+  local launch_status=$?
+  set -e
+
+  local archive='/tmp/calibrationdata.tar.gz'
+  if [[ -f "${archive}" && "${archive}" -nt "${marker}" ]]; then
+    local timestamp result_dir ost_file
+    timestamp="$(date +%Y%m%d_%H%M%S)"
+    result_dir="${HOME}/autoaim_calibration/${timestamp}"
+    mkdir -p "${result_dir}"
+    cp "${archive}" "${result_dir}/calibrationdata.tar.gz"
+    tar -xzf "${archive}" -C "${result_dir}"
+    ost_file="$(find "${result_dir}" -type f -name ost.yaml -print -quit)"
+    if [[ -n "${ost_file}" ]]; then
+      printf '%s\n' "${ost_file}" > "${HOME}/autoaim_calibration/latest_path.txt"
+      echo
+      echo "Calibration saved: ${ost_file}"
+      echo "Return to Windows and run fetch_calibration.cmd."
+    else
+      echo "SAVE created an archive, but ost.yaml was not found in it." >&2
+      rm -f "${marker}"
+      exit 8
+    fi
+  else
+    echo "No new calibration was saved. Click SAVE before closing the GUI." >&2
+    rm -f "${marker}"
+    if [[ "${launch_status}" -ne 0 ]]; then
+      exit "${launch_status}"
+    fi
+    exit 9
+  fi
+  rm -f "${marker}"
+}
+
+capture_extrinsics() {
+  check_not_running
+  if pgrep -f '/serical_device_ros2/vision_pub_node' >/dev/null 2>&1; then
+    echo "A serial vision node is already running. Stop it with Ctrl+C first." >&2
+    exit 6
+  fi
+  source_install
+  local capture_executable="${PROJECT_ROOT}/src/auto_aim_ros2/scripts/extrinsic_capture_node.py"
+  if [[ ! -x "${capture_executable}" ]]; then
+    chmod u+x "${capture_executable}"
+  fi
+  ensure_graphical_display
+  if ! command -v lsusb >/dev/null 2>&1 || ! lsusb | grep -q '2bdf:0001'; then
+    echo "Hikrobot camera 2bdf:0001 was not detected." >&2
+    exit 10
+  fi
+  if [[ ! -e /dev/robomaster ]]; then
+    echo "Serial device missing: /dev/robomaster" >&2
+    echo "Connect the STM32/controller USB cable before collecting extrinsics." >&2
+    exit 9
+  fi
+  if [[ ! "${AUTOAIM_BOARD_SIZE}" =~ ^([0-9]+)x([0-9]+)$ ]]; then
+    echo "Invalid AUTOAIM_BOARD_SIZE: ${AUTOAIM_BOARD_SIZE}" >&2
+    exit 12
+  fi
+
+  local board_cols="${BASH_REMATCH[1]}"
+  local board_rows="${BASH_REMATCH[2]}"
+  local timestamp result_dir
+  timestamp="$(date +%Y%m%d_%H%M%S)"
+  result_dir="${HOME}/autoaim_extrinsic/${timestamp}"
+
+  echo "Board:  ${board_cols}x${board_rows} inner corners, ${AUTOAIM_SQUARE_SIZE} m"
+  echo "Output: ${result_dir}"
+  echo "Fix the board in the world. Move yaw and pitch, hold still, then press s."
+  echo "Collect 20-30 varied poses; press q or Ctrl+C when done."
+
+  exec ros2 launch auto_aim_ros2 extrinsic_capture.launch.py \
+    output_directory:="${result_dir}" \
+    camera_info_url:="${AUTOAIM_CAMERA_INFO_URL}" \
+    board_cols:="${board_cols}" \
+    board_rows:="${board_rows}" \
+    square_size_m:="${AUTOAIM_SQUARE_SIZE}" \
+    local_only:="${AUTOAIM_LOCAL_ONLY}"
+}
+
+start_autoaim() {
+  local mode="$1"
+  local enable_output='false'
+  local enable_fire='false'
+  check_not_running
+  check_camera_config
+  source_install
+
+  if [[ ! -e /dev/robomaster ]]; then
+    echo "Serial device missing: /dev/robomaster" >&2
+    echo "Connect the STM32/controller USB cable before starting the full pipeline." >&2
+    exit 9
+  fi
+
+  if ! command -v lsusb >/dev/null 2>&1 || ! lsusb | grep -q '2bdf:0001'; then
+    echo "Hikrobot camera 2bdf:0001 was not detected." >&2
+    exit 10
+  fi
+
+  if [[ "${mode}" == 'on' ]]; then
+    echo "WARNING: the gimbal may move immediately after tracking locks."
+    echo "Lift the chassis, clear the gimbal area, and keep the launcher disabled."
+    read -r -p "Type AIM to enable no-fire gimbal output: " confirmation
+    if [[ "${confirmation}" != 'AIM' ]]; then
+      echo "Cancelled."
+      exit 11
+    fi
+    enable_output='true'
+  fi
+
+  if [[ "${mode}" == 'fire' ]]; then
+    echo "DANGER: gimbal output and burst fire will be enabled."
+    echo "The launcher can fire after aim, velocity, pose, mode, and freshness gates pass."
+    echo "Lift the chassis and clear the complete firing area before continuing."
+    read -r -p "Type AIM to enable gimbal output: " confirmation1
+    if [[ "${confirmation1}" != 'AIM' ]]; then
+      echo "Cancelled."
+      exit 11
+    fi
+    read -r -p "Type FIRE to arm the launcher: " confirmation2
+    if [[ "${confirmation2}" != 'FIRE' ]]; then
+      echo "Cancelled."
+      exit 11
+    fi
+    enable_output='true'
+    enable_fire='true'
+  fi
+
+  local fire_note='fire disabled'
+  if [[ "${enable_fire}" == 'true' ]]; then
+    fire_note="BURST FIRE ARMED (${AUTOAIM_FIRE_BURST_COUNT} pulses)"
+  fi
+  echo "Camera info: ${AUTOAIM_CAMERA_INFO_URL}"
+  echo "Mode:        ${mode} (${fire_note})"
+  exec ros2 launch auto_aim_ros2 full_pipeline.launch.py \
+    project_root:="${PROJECT_ROOT}/sp_vision_25" \
+    config_path:="${AUTOAIM_CONFIG_PATH}" \
+    camera_info_url:="${AUTOAIM_CAMERA_INFO_URL}" \
+    start_serial:=true \
+    enable_control_output:="${enable_output}" \
+    enable_fire:="${enable_fire}" \
+    fire_hold_s:="${AUTOAIM_FIRE_HOLD_S}" \
+    fire_interval_s:="${AUTOAIM_FIRE_INTERVAL_S}" \
+    fire_shot_period_s:="${AUTOAIM_FIRE_SHOT_PERIOD_S}" \
+    fire_burst_count:="${AUTOAIM_FIRE_BURST_COUNT}" \
+    fire_yaw_tolerance_deg:="${AUTOAIM_FIRE_YAW_TOLERANCE_DEG}" \
+    fire_pitch_tolerance_deg:="${AUTOAIM_FIRE_PITCH_TOLERANCE_DEG}" \
+    fire_max_yaw_velocity_deg_s:="${AUTOAIM_FIRE_MAX_YAW_VELOCITY_DEG_S}" \
+    fire_max_pitch_velocity_deg_s:="${AUTOAIM_FIRE_MAX_PITCH_VELOCITY_DEG_S}" \
+    fire_max_reprojection_error_px:="${AUTOAIM_FIRE_MAX_REPROJECTION_ERROR_PX}" \
+    require_auto_aim_mode:=true \
+    control_target_filter_alpha:="${AUTOAIM_CONTROL_FILTER_ALPHA}" \
+    control_yaw_deadband_deg:="${AUTOAIM_YAW_DEADBAND_DEG}" \
+    control_pitch_deadband_deg:="${AUTOAIM_PITCH_DEADBAND_DEG}" \
+    local_only:="${AUTOAIM_LOCAL_ONLY}"
+}
+
+show_status() {
+  echo "Project root: ${PROJECT_ROOT}"
+  echo "Build setup:  ${INSTALL_SETUP}"
+  [[ -f "${INSTALL_SETUP}" ]] && echo 'Build:        ready' || echo 'Build:        missing'
+  if command -v lsusb >/dev/null 2>&1 && lsusb | grep -q '2bdf:0001'; then
+    echo 'Camera:       connected'
+  else
+    echo 'Camera:       missing'
+  fi
+  if [[ -e /dev/robomaster ]]; then
+    echo "Serial:       $(readlink -f /dev/robomaster)"
+  else
+    echo 'Serial:       missing (/dev/robomaster)'
+  fi
+  if pgrep -f '/auto_aim_ros2/auto_aim_node' >/dev/null 2>&1; then
+    echo 'Auto-aim:     running'
+  else
+    echo 'Auto-aim:     stopped'
+  fi
+  echo "Calibration:  ${AUTOAIM_CAMERA_INFO_URL}"
+}
+
+command="${1:-}"
+case "${command}" in
+  build) build_workspace ;;
+  calibrate) calibrate_camera ;;
+  extrinsic-capture) capture_extrinsics ;;
+  safe) start_autoaim safe ;;
+  on) start_autoaim on ;;
+  fire) start_autoaim fire ;;
+  status) show_status ;;
+  -h|--help|help|'') usage ;;
+  *)
+    echo "Unknown command: ${command}" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

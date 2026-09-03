@@ -1,0 +1,122 @@
+enemy_color: "red"
+# enemy_color: "blue"
+
+#####-----神经网络参数-----#####
+yolo_name: yolov5
+classify_model: assets/tiny_resnet.onnx
+yolo11_model_path: assets/yolo11.xml
+yolov8_model_path: assets/yolov8.xml
+yolov5_model_path: assets/yolov5.xml
+device: GPU
+min_confidence: 0.8
+use_traditional: true
+
+#####-----ROI-----#####
+roi: 
+  x: 420
+  y: 50
+  width: 600
+  height: 600
+
+use_roi: false
+
+#####-----传统方法参数-----#####
+threshold: 150
+max_angle_error: 45 # degree
+min_lightbar_ratio: 1.5
+max_lightbar_ratio: 20
+min_lightbar_length: 8
+min_armor_ratio: 1
+max_armor_ratio: 5
+max_side_ratio: 1.5
+max_rectangular_error: 25 # degree
+
+#####-----tracker参数-----#####
+min_detect_count: 5
+max_temp_lost_count: 15
+outpost_max_temp_lost_count: 75
+
+#####-----aimer参数-----#####
+yaw_offset: 2 # degree -2.5
+pitch_offset: 6.5 # degree 2
+comming_angle: 55 # degree
+leaving_angle: 20 # degree
+decision_speed: 7 # rad/s
+high_speed_delay_time: 0.0 # s
+low_speed_delay_time: 0.0 # s planner use this value
+
+#####-----shooter参数-----#####
+first_tolerance: 3 # 近距离射击容差，degree
+# 目标距离 <= judge_distance 时允许的 yaw/pitch 误差
+# 必须在真实打靶中按近距离场景测量，不能直接写死
+second_tolerance: 2 # 远距离射击容差，degree
+# 目标距离 > judge_distance 时允许的 yaw/pitch 误差
+# 远距离下由弹道和散布决定，必须在实测中修正
+judge_distance: 2 # 距离判断阈值
+# 这是“近距离 / 远距离”判定边界
+# 必须结合弹速、散布和装甲板大小一起实测
+auto_fire: true # 是否由自瞄控制射击
+# true: 允许视觉方向下发射； false: 仅作瞄准，不发射
+fire_cooldown: 0.25 # 最小发射间隔（s）
+# 由发射机构实测确定，防止连发、热量和弹速波动
+min_target_lock_frames: 5 # 目标锁定最小连续有效帧数
+# 只有在连续 N 帧稳定后才允许开火
+max_sensor_stale_time: 0.05 # 传感器数据最大陈旧时间（s）
+# 监控相机、IMU、机器人状态是否过期
+# 过期则判定为不安全，不开火
+max_pnp_residual: 1.5 # PnP 重投影误差阈值（pixel）
+# 由物理成像误差决定
+# 误差过大说明目标观测不可信，不允许射击
+max_track_uncertainty: 0.2 # 跟踪不确定度阈值
+# 若目标状态不稳、EKF 方差大，则禁止射击
+
+camera_name: "hikrobot"
+exposure_ms: 2.5
+gain: 16.9
+vid_pid: "2bdf:0001"
+
+#  1  0  0
+#  0  1  0
+#  0  0  1
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+# 重投影误差: 0.1820px
+camera_matrix: [1785.4881526822305, 0, 672.4806478241826, 0, 1785.026019470562, 559.89603224794314, 0, 0, 1]
+distort_coeffs: [-0.076005079619881746, 0.11182817466388446, 0.0005362204787722057, -0.0027546300984895122, 0]
+
+# 相机同理想情况的偏角: yaw1.44 pitch-7.28 roll0.96 degree
+# 标定板到世界坐标系原点的水平距离: 1.13 m
+# 标定板同竖直摆放时的偏角: yaw7.61 pitch13.92 roll-0.46 degree
+R_camera2gimbal: [-0.027182119030230909, -0.12616154330853446, 0.99163723074269183, -0.99949106557517331, 0.019998323121329122, -0.024853106601381177, -0.016695575474690555, -0.99180811252093692, -0.12664093215554434]
+t_camera2gimbal: [0.13160669975045827, 0.10377721766577375, 0.024908271912914642]
+
+#####-----cboard参数-----#####
+quaternion_canid: 0x100
+bullet_speed_canid: 0x101
+send_canid: 0xff
+can_interface: "can0"
+
+#####-----gimbal参数-----#####
+com_port: "/dev/gimbal"
+yaw_kp: 0
+yaw_kd: 0
+pitch_kp: 0
+pitch_kd: 0
+
+#####-----planner-----#####
+fire_thresh: 0.0035
+
+max_yaw_acc: 50
+Q_yaw: [9e6, 0]
+R_yaw: [1]
+
+max_pitch_acc: 100
+Q_pitch: [9e6, 0]
+R_pitch: [1]
+
+#####-----buff_detector参数-----#####
+model: "assets/yolo11_buff_int8.xml"
+
+#####-----buff_aimer参数-----#####
+fire_gap_time: 0.700   # s
+predict_time: 0.120     # s

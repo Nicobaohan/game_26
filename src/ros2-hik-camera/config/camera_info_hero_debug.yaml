@@ -1,0 +1,33 @@
+# Temporary calibration for the hero debug vehicle.
+# Resolution: 1440x1080; board: 11x8 inner corners, 0.020 m squares.
+# This is sufficient for pipeline bring-up but must not be reused on another vehicle.
+image_width: 1440
+image_height: 1080
+camera_name: narrow_stereo
+distortion_model: plumb_bob
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [3612.05834, 0.0, 757.31410,
+         0.0, 3608.95096, 533.44966,
+         0.0, 0.0, 1.0]
+
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.037386, 0.939412, -0.000765, 0.005710, 0.0]
+
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [3613.66577, 0.0, 759.42916, 0.0,
+         0.0, 3616.80737, 532.69597, 0.0,
+         0.0, 0.0, 1.0, 0.0]
