@@ -27,7 +27,7 @@ Planner::Planner(const std::string & config_path)
 Plan Planner::plan(Target target, double bullet_speed)
 {
   // 0. Check bullet speed
-  if (bullet_speed < 10 || bullet_speed > 25) {
+  if (bullet_speed < 10 || bullet_speed > 35) {
     bullet_speed = 22;
   }
 

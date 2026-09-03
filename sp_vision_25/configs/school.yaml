@@ -41,7 +41,7 @@ outpost_max_temp_lost_count: 75
 #####-----aimer参数-----#####
 # 未完成实车零偏标定前保持为 0。
 yaw_offset: 0
-pitch_offset: 0
+pitch_offset: 3
 comming_angle: 55
 leaving_angle: 20
 decision_speed: 7

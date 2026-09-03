@@ -566,7 +566,7 @@ namespace auto_aim_ros2
             vision.received && std::isfinite(vision.message.shoot_speed) &&
                     vision.message.shoot_speed > 1.0F
                 ? vision.message.shoot_speed
-                : 23.0;
+                : 30.0;
         command = aimer_->aim(targets, started, bullet_speed);
       }
       catch (const std::exception &error)
