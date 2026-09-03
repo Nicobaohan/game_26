@@ -2,6 +2,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <stdexcept>
 #include <tuple>
 
 #include "tools/logger.hpp"
@@ -24,6 +25,13 @@ Tracker::Tracker(const std::string & config_path, Solver & solver)
   max_temp_lost_count_ = yaml["max_temp_lost_count"].as<int>();
   outpost_max_temp_lost_count_ = yaml["outpost_max_temp_lost_count"].as<int>();
   normal_temp_lost_count_ = max_temp_lost_count_;
+  max_frame_gap_s_ =
+    yaml["max_frame_gap_s"] ? yaml["max_frame_gap_s"].as<double>() : 0.25;
+  max_match_distance_m_ =
+    yaml["max_match_distance_m"] ? yaml["max_match_distance_m"].as<double>() : 0.8;
+  if (max_frame_gap_s_ <= 0 || max_match_distance_m_ <= 0) {
+    throw std::runtime_error("tracker timing and distance gates must be positive");
+  }
 }
 
 std::string Tracker::state() const { return state_; }
@@ -35,7 +43,7 @@ std::list<Target> Tracker::track(
   last_timestamp_ = t;
 
   // 时间间隔过长，说明可能发生了相机离线
-  if (state_ != "lost" && dt > 0.1) {
+  if (state_ != "lost" && dt > max_frame_gap_s_) {
     tools::logger()->warn("[Tracker] Large dt: {:.3f}s", dt);
     state_ = "lost";
   }
@@ -109,7 +117,7 @@ std::tuple<omniperception::DetectionResult, std::list<Target>> Tracker::track(
   last_timestamp_ = t;
 
   // 时间间隔过长，说明可能发生了相机离线
-  if (state_ != "lost" && dt > 0.1) {
+  if (state_ != "lost" && dt > max_frame_gap_s_) {
     tools::logger()->warn("[Tracker] Large dt: {:.3f}s", dt);
     state_ = "lost";
   }
@@ -267,28 +275,53 @@ bool Tracker::update_target(std::list<Armor> & armors, std::chrono::steady_clock
 {
   target_.predict(t);
 
-  int found_count = 0;
-  double min_x = 1e10;  // 画面最左侧
-  for (const auto & armor : armors) {
-    if (armor.name != target_.name || armor.type != target_.armor_type) continue;
-    found_count++;
-    min_x = armor.center.x < min_x ? armor.center.x : min_x;
-  }
+  // EKF 预测的装甲板位置，用于门控
+  const auto predicted_list = target_.armor_xyza_list();
 
-  if (found_count == 0) return false;
-
+  // One image can contain two plates with the same robot number.  Feeding
+  // both observations into one predict/update cycle makes the EKF jump from
+  // one physical plate to another.  Select one observation against the
+  // predicted plate positions and update exactly once per frame.
+  Armor * best_armor = nullptr;
+  double best_distance = 1e10;
+  int matching_count = 0;
   for (auto & armor : armors) {
-    if (
-      armor.name != target_.name || armor.type != target_.armor_type
-      //  || armor.center.x != min_x
-    )
-      continue;
+    if (armor.name != target_.name || armor.type != target_.armor_type) continue;
+
+    matching_count++;
 
     solver_.solve(armor);
 
-    target_.update(armor);
+    // 门控：观测位置离最近预测装甲板的 3D 距离
+    double candidate_distance = 0.0;
+    if (!predicted_list.empty()) {
+      candidate_distance = 1e10;
+      for (const auto & pred : predicted_list) {
+        const double dist = (armor.xyz_in_world - pred.head(3)).norm();
+        if (dist < candidate_distance) candidate_distance = dist;
+      }
+      if (candidate_distance > max_match_distance_m_) {
+        tools::logger()->debug(
+          "[Tracker] Gating: armor {:.2f}m from prediction, skipped", candidate_distance);
+        continue;
+      }
+    }
+
+    if (best_armor == nullptr || candidate_distance < best_distance ||
+        (candidate_distance == best_distance && armor.confidence > best_armor->confidence)) {
+      best_armor = &armor;
+      best_distance = candidate_distance;
+    }
   }
 
+  if (best_armor == nullptr) return false;
+
+  if (matching_count > 1) {
+    tools::logger()->debug(
+      "[Tracker] Selected one of {} matching armors (distance {:.2f}m)", matching_count,
+      best_distance);
+  }
+  target_.update(*best_armor);
   return true;
 }
 

@@ -159,6 +159,13 @@ GIT_DIR="$repo" GIT_WORK_TREE="$current" \
     git read-tree --reset -u refs/heads/deploy
 touch "$marker"
 
+# A deployment snapshot created from a Windows worktree does not reliably
+# preserve Unix executable bits. Restore them for scripts that are meant to be
+# launched directly on the Orin.
+chmod +x "$current/aim_on.sh" "$current/scripts/aim"
+find "$current/scripts" -maxdepth 1 -type f \
+    \( -name '*.sh' -o -name '*.py' \) -exec chmod +x {} +
+
 tree=$(git --git-dir="$repo" rev-parse 'refs/heads/deploy^{tree}')
 echo "REMOTE_CURRENT=$current"
 echo "DEPLOY_TREE=$tree"

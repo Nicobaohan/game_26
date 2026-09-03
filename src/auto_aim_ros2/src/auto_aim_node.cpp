@@ -77,9 +77,15 @@ namespace auto_aim_ros2
       max_control_pitch_error_rad_ =
           declare_parameter<double>("max_control_pitch_error_deg", 10.0) * CV_PI / 180.0;
       max_control_step_rad_ =
-          declare_parameter<double>("max_control_step_deg", 1.0) * CV_PI / 180.0;
+          declare_parameter<double>("max_control_step_deg", 4.0) * CV_PI / 180.0;
+      max_control_rate_rad_s_ =
+          declare_parameter<double>("max_control_rate_deg_s", 60.0) * CV_PI / 180.0;
       control_target_filter_alpha_ =
           declare_parameter<double>("control_target_filter_alpha", 0.25);
+      control_moving_filter_alpha_ =
+          declare_parameter<double>("control_moving_filter_alpha", 0.45);
+      control_moving_speed_mps_ =
+          declare_parameter<double>("control_moving_speed_mps", 0.80);
       control_yaw_deadband_rad_ =
           declare_parameter<double>("control_yaw_deadband_deg", 0.25) * CV_PI / 180.0;
       control_pitch_deadband_rad_ =
@@ -102,8 +108,13 @@ namespace auto_aim_ros2
       if (!std::isfinite(max_control_yaw_error_rad_) || max_control_yaw_error_rad_ <= 0.0 ||
           !std::isfinite(max_control_pitch_error_rad_) || max_control_pitch_error_rad_ <= 0.0 ||
           !std::isfinite(max_control_step_rad_) || max_control_step_rad_ <= 0.0 ||
+          !std::isfinite(max_control_rate_rad_s_) || max_control_rate_rad_s_ <= 0.0 ||
           !std::isfinite(control_target_filter_alpha_) || control_target_filter_alpha_ <= 0.0 ||
           control_target_filter_alpha_ > 1.0 ||
+          !std::isfinite(control_moving_filter_alpha_) || control_moving_filter_alpha_ <= 0.0 ||
+          control_moving_filter_alpha_ > 1.0 ||
+          control_moving_filter_alpha_ < control_target_filter_alpha_ ||
+          !std::isfinite(control_moving_speed_mps_) || control_moving_speed_mps_ < 0.0 ||
           !std::isfinite(control_yaw_deadband_rad_) || control_yaw_deadband_rad_ < 0.0 ||
           !std::isfinite(control_pitch_deadband_rad_) || control_pitch_deadband_rad_ < 0.0 ||
           !std::isfinite(fire_hold_s_) || fire_hold_s_ < 0.0 ||
@@ -600,9 +611,24 @@ namespace auto_aim_ros2
           target_locked && vision.fresh && vision.quaternion_valid && mode_allowed &&
           target_within_control_window;
 
+      double target_planar_speed_mps = 0.0;
+      if (!targets.empty())
+      {
+        const auto target_state = targets.front().ekf_x();
+        if (target_state.size() > 3 && std::isfinite(target_state[1]) &&
+            std::isfinite(target_state[3]))
+        {
+          target_planar_speed_mps = std::hypot(target_state[1], target_state[3]);
+        }
+      }
+      const double target_filter_alpha =
+          target_planar_speed_mps >= control_moving_speed_mps_
+              ? control_moving_filter_alpha_
+              : control_target_filter_alpha_;
+
       // Detector corners, PnP and the EKF all contribute a little noise even
-      // when the target is motionless.  Filter the absolute target angles so
-      // that the gimbal controller does not chase every frame of that noise.
+      // when the target is motionless. Use stronger smoothing for a stationary
+      // target, but reduce the lag once the EKF sees real translational motion.
       if (target_locked && target_within_control_window)
       {
         if (!filtered_target_valid_)
@@ -613,10 +639,10 @@ namespace auto_aim_ros2
         }
         else
         {
-          filtered_target_yaw_rad_ += control_target_filter_alpha_ * std::remainder(
+          filtered_target_yaw_rad_ += target_filter_alpha * std::remainder(
               command.yaw - filtered_target_yaw_rad_, 2.0 * CV_PI);
           filtered_target_pitch_rad_ +=
-              control_target_filter_alpha_ * (command.pitch - filtered_target_pitch_rad_);
+              target_filter_alpha * (command.pitch - filtered_target_pitch_rad_);
         }
       }
       else
@@ -631,6 +657,16 @@ namespace auto_aim_ros2
       const double yaw_error_rad =
           std::remainder(control_target_yaw_rad - current_yaw_rad, 2.0 * CV_PI);
       const double pitch_error_rad = control_target_pitch_rad - current_pitch_rad;
+
+      double control_dt_s = 1.0 / 60.0;
+      if (last_control_update_at_ != std::chrono::steady_clock::time_point{})
+      {
+        control_dt_s = std::chrono::duration<double>(started - last_control_update_at_).count();
+      }
+      last_control_update_at_ = started;
+      control_dt_s = std::clamp(control_dt_s, 1.0 / 240.0, 0.25);
+      const double max_control_step_this_update_rad = std::min(
+          max_control_step_rad_, max_control_rate_rad_s_ * control_dt_s);
 
       double target_reprojection_error_px = std::numeric_limits<double>::infinity();
       if (!targets.empty())
@@ -753,13 +789,15 @@ namespace auto_aim_ros2
           if (!yaw_in_deadband_)
           {
             const double yaw_step = std::clamp(
-                yaw_error_rad, -max_control_step_rad_, max_control_step_rad_);
+                yaw_error_rad, -max_control_step_this_update_rad,
+                max_control_step_this_update_rad);
             held_control_yaw_rad_ = current_yaw_rad + yaw_step;
           }
           if (!pitch_in_deadband_)
           {
             const double pitch_step = std::clamp(
-                pitch_error_rad, -max_control_step_rad_, max_control_step_rad_);
+                pitch_error_rad, -max_control_step_this_update_rad,
+                max_control_step_this_update_rad);
             held_control_pitch_rad_ = current_pitch_rad + pitch_step;
           }
           control.yaw = static_cast<float>(held_control_yaw_rad_);
@@ -767,12 +805,15 @@ namespace auto_aim_ros2
           RCLCPP_INFO_THROTTLE(
               get_logger(), *get_clock(), 500,
               "Control active: feedback=(%.2f, %.2f) deg target=(%.2f, %.2f) deg "
-              "sent=(%.2f, %.2f) deg hold=(%s,%s)",
+              "sent=(%.2f, %.2f) deg hold=(%s,%s) limit=%.2fdeg "
+              "target_speed=%.2fm/s alpha=%.2f",
               current_yaw_rad * 180.0 / CV_PI, current_pitch_rad * 180.0 / CV_PI,
               control_target_yaw_rad * 180.0 / CV_PI,
               control_target_pitch_rad * 180.0 / CV_PI,
               control.yaw * 180.0 / CV_PI, control.pitch * 180.0 / CV_PI,
-              yaw_in_deadband_ ? "yes" : "no", pitch_in_deadband_ ? "yes" : "no");
+              yaw_in_deadband_ ? "yes" : "no", pitch_in_deadband_ ? "yes" : "no",
+              max_control_step_this_update_rad * 180.0 / CV_PI,
+              target_planar_speed_mps, target_filter_alpha);
         }
         else
         {
@@ -845,8 +886,11 @@ namespace auto_aim_ros2
     double vision_timeout_s_ = 0.2;
     double max_control_yaw_error_rad_ = 15.0 * CV_PI / 180.0;
     double max_control_pitch_error_rad_ = 10.0 * CV_PI / 180.0;
-    double max_control_step_rad_ = 1.0 * CV_PI / 180.0;
+    double max_control_step_rad_ = 4.0 * CV_PI / 180.0;
+    double max_control_rate_rad_s_ = 60.0 * CV_PI / 180.0;
     double control_target_filter_alpha_ = 0.25;
+    double control_moving_filter_alpha_ = 0.45;
+    double control_moving_speed_mps_ = 0.80;
     double control_yaw_deadband_rad_ = 0.25 * CV_PI / 180.0;
     double control_pitch_deadband_rad_ = 0.20 * CV_PI / 180.0;
     bool filtered_target_valid_ = false;
@@ -857,6 +901,7 @@ namespace auto_aim_ros2
     bool pitch_in_deadband_ = false;
     double held_control_yaw_rad_ = 0.0;
     double held_control_pitch_rad_ = 0.0;
+    std::chrono::steady_clock::time_point last_control_update_at_{};
     bool enable_fire_ = false;
     double fire_hold_s_ = 0.15;
     double fire_interval_s_ = 0.5;

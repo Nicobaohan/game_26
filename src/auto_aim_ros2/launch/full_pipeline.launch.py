@@ -34,6 +34,11 @@ def generate_launch_description():
     require_auto_aim_mode = LaunchConfiguration('require_auto_aim_mode')
     control_target_filter_alpha = LaunchConfiguration(
         'control_target_filter_alpha')
+    control_moving_filter_alpha = LaunchConfiguration(
+        'control_moving_filter_alpha')
+    control_moving_speed_mps = LaunchConfiguration('control_moving_speed_mps')
+    max_control_rate_deg_s = LaunchConfiguration('max_control_rate_deg_s')
+    max_control_step_deg = LaunchConfiguration('max_control_step_deg')
     control_yaw_deadband_deg = LaunchConfiguration('control_yaw_deadband_deg')
     control_pitch_deadband_deg = LaunchConfiguration(
         'control_pitch_deadband_deg')
@@ -69,6 +74,10 @@ def generate_launch_description():
             'fire_max_reprojection_error_px', default_value='3.0'),
         DeclareLaunchArgument('require_auto_aim_mode', default_value='true'),
         DeclareLaunchArgument('control_target_filter_alpha', default_value='0.25'),
+        DeclareLaunchArgument('control_moving_filter_alpha', default_value='0.45'),
+        DeclareLaunchArgument('control_moving_speed_mps', default_value='0.80'),
+        DeclareLaunchArgument('max_control_rate_deg_s', default_value='60.0'),
+        DeclareLaunchArgument('max_control_step_deg', default_value='4.0'),
         DeclareLaunchArgument('control_yaw_deadband_deg', default_value='0.25'),
         DeclareLaunchArgument('control_pitch_deadband_deg', default_value='0.20'),
         DeclareLaunchArgument('start_serial', default_value='false'),
@@ -93,6 +102,10 @@ def generate_launch_description():
                 'fire_max_reprojection_error_px': fire_max_reprojection_error_px,
                 'require_auto_aim_mode': require_auto_aim_mode,
                 'control_target_filter_alpha': control_target_filter_alpha,
+                'control_moving_filter_alpha': control_moving_filter_alpha,
+                'control_moving_speed_mps': control_moving_speed_mps,
+                'max_control_rate_deg_s': max_control_rate_deg_s,
+                'max_control_step_deg': max_control_step_deg,
                 'control_yaw_deadband_deg': control_yaw_deadband_deg,
                 'control_pitch_deadband_deg': control_pitch_deadband_deg,
                 'local_only': local_only,

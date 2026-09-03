@@ -18,6 +18,38 @@ find_package(spdlog REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+option(AUTO_AIM_ENABLE_TENSORRT "Enable the NVIDIA TensorRT detector backend" ON)
+set(AUTO_AIM_TENSORRT_FOUND OFF)
+if(AUTO_AIM_ENABLE_TENSORRT)
+  find_path(TENSORRT_INCLUDE_DIR
+    NAMES NvInfer.h
+    HINTS /usr/include /usr/local/include /usr/include/aarch64-linux-gnu
+  )
+  find_library(TENSORRT_NVINFER_LIBRARY
+    NAMES nvinfer
+    HINTS /usr/lib /usr/local/lib /usr/lib/aarch64-linux-gnu
+  )
+  find_path(CUDA_RUNTIME_INCLUDE_DIR
+    NAMES cuda_runtime_api.h
+    HINTS /usr/local/cuda/include /usr/local/cuda/targets/aarch64-linux/include
+  )
+  find_library(CUDA_RUNTIME_LIBRARY
+    NAMES cudart
+    HINTS
+      /usr/local/cuda/lib64
+      /usr/local/cuda/targets/aarch64-linux/lib
+      /usr/lib/aarch64-linux-gnu
+  )
+  if(
+    TENSORRT_INCLUDE_DIR AND TENSORRT_NVINFER_LIBRARY AND
+    CUDA_RUNTIME_INCLUDE_DIR AND CUDA_RUNTIME_LIBRARY)
+    set(AUTO_AIM_TENSORRT_FOUND ON)
+    message(STATUS "TensorRT detector backend enabled")
+  else()
+    message(WARNING "TensorRT/CUDA runtime not found; TensorRT detector backend disabled")
+  endif()
+endif()
+
 # The pip OpenVINO package used on the Orin ships its CMake config inside the
 # Python package, which is not part of CMAKE_PREFIX_PATH by default.
 find_package(OpenVINO QUIET COMPONENTS Runtime)
@@ -61,6 +93,21 @@ add_library(sp_vision_detector STATIC
   ${SP_VISION_ROOT}/tools/math_tools.cpp
   ${SP_VISION_ROOT}/tools/trajectory.cpp
 )
+
+if(AUTO_AIM_TENSORRT_FOUND)
+  target_sources(sp_vision_detector PRIVATE
+    ${SP_VISION_ROOT}/tasks/auto_aim/yolos/yolov5_trt.cpp
+  )
+  target_compile_definitions(sp_vision_detector PUBLIC SP_VISION_HAS_TENSORRT=1)
+  target_include_directories(sp_vision_detector PUBLIC
+    ${TENSORRT_INCLUDE_DIR}
+    ${CUDA_RUNTIME_INCLUDE_DIR}
+  )
+  target_link_libraries(sp_vision_detector PUBLIC
+    ${TENSORRT_NVINFER_LIBRARY}
+    ${CUDA_RUNTIME_LIBRARY}
+  )
+endif()
 
 target_include_directories(sp_vision_detector PUBLIC
   ${SP_VISION_ROOT}
