@@ -81,6 +81,11 @@ namespace auto_aim_ros2
           declare_parameter<double>("max_control_step_deg", 1.0) * CV_PI / 180.0;
       control_target_filter_alpha_ =
           declare_parameter<double>("control_target_filter_alpha", 0.25);
+      image_servo_pitch_enable_ = declare_parameter<bool>("image_servo_pitch_enable", true);
+      image_servo_target_y_px_ = declare_parameter<double>("image_servo_target_y_px", 726.0);
+      image_servo_pitch_gain_ = declare_parameter<double>("image_servo_pitch_gain", 1.0);
+      image_servo_max_correction_rad_ =
+          declare_parameter<double>("image_servo_max_correction_deg", 3.0) * CV_PI / 180.0;
       control_yaw_deadband_rad_ =
           declare_parameter<double>("control_yaw_deadband_deg", 0.25) * CV_PI / 180.0;
       control_pitch_deadband_rad_ =
@@ -105,6 +110,11 @@ namespace auto_aim_ros2
           !std::isfinite(max_control_step_rad_) || max_control_step_rad_ <= 0.0 ||
           !std::isfinite(control_target_filter_alpha_) || control_target_filter_alpha_ <= 0.0 ||
           control_target_filter_alpha_ > 1.0 ||
+          !std::isfinite(image_servo_target_y_px_) || image_servo_target_y_px_ <= 0.0 ||
+          !std::isfinite(image_servo_pitch_gain_) || image_servo_pitch_gain_ == 0.0 ||
+          std::abs(image_servo_pitch_gain_) > 10.0 ||
+          !std::isfinite(image_servo_max_correction_rad_) ||
+          image_servo_max_correction_rad_ <= 0.0 ||
           !std::isfinite(control_yaw_deadband_rad_) || control_yaw_deadband_rad_ < 0.0 ||
           !std::isfinite(control_pitch_deadband_rad_) || control_pitch_deadband_rad_ < 0.0 ||
           !std::isfinite(fire_hold_s_) || fire_hold_s_ < 0.0 ||
@@ -496,7 +506,9 @@ namespace auto_aim_ros2
       }
 
       cv::Mat debug_image;
-      if (publish_debug_image_)
+      const bool debug_image_requested =
+          publish_debug_image_ && debug_publisher_->get_subscription_count() > 0;
+      if (debug_image_requested)
         debug_image = image->image.clone();
       std::size_t valid_pose_count = 0;
       std::list<auto_aim::Armor> tracking_detections;
@@ -542,7 +554,7 @@ namespace auto_aim_ros2
           }
         }
 
-        if (publish_debug_image_ && contour.size() >= 3)
+        if (debug_image_requested && contour.size() >= 3)
         {
           cv::polylines(debug_image, contour, true, cv::Scalar(0, 255, 0), 2);
           cv::putText(
@@ -589,6 +601,54 @@ namespace auto_aim_ros2
             get_logger(), *get_clock(), 1000, "Tracking/aiming failed: %s", error.what());
       }
 
+      // 选取用于图像伺服与预览显示的装甲板中心像素坐标：
+      // 优先在当前跟踪目标的同号装甲板中取画面最下方（y 最大）的一个；
+      // 无跟踪目标或无同号检测时回退到全部检测中 y 最大的一个。
+      char armor_center_buf[48];
+      bool armor_center_valid = false;
+      double armor_center_x = 0.0;
+      double armor_center_y = 0.0;
+      {
+        const bool have_tracked_target = !targets.empty();
+        const auto tracked_number = have_tracked_target
+                                        ? static_cast<int>(targets.front().name)
+                                        : -1;
+        bool found_same_number = false;
+        double same_x = 0.0, same_y = 0.0;
+        bool found_any = false;
+        double any_x = 0.0, any_y = 0.0;
+        for (const auto & armor : detections)
+        {
+          if (!found_any || armor.center.y > any_y)
+          {
+            any_x = armor.center.x;
+            any_y = armor.center.y;
+            found_any = true;
+          }
+          if (have_tracked_target && static_cast<int>(armor.name) == tracked_number &&
+              (!found_same_number || armor.center.y > same_y))
+          {
+            same_x = armor.center.x;
+            same_y = armor.center.y;
+            found_same_number = true;
+          }
+        }
+        if (found_same_number)
+        {
+          armor_center_x = same_x;
+          armor_center_y = same_y;
+          armor_center_valid = true;
+        }
+        else if (found_any)
+        {
+          armor_center_x = any_x;
+          armor_center_y = any_y;
+          armor_center_valid = true;
+        }
+      }
+      const double image_servo_error_px =
+          armor_center_valid ? armor_center_y - image_servo_target_y_px_ : 0.0;
+
       const auto tracker_state = tracker_->state();
       const bool command_finite = std::isfinite(command.yaw) && std::isfinite(command.pitch);
       const bool target_locked =
@@ -606,10 +666,37 @@ namespace auto_aim_ros2
       const double raw_yaw_error_rad =
           std::remainder(command.yaw - current_yaw_rad, 2.0 * CV_PI);
       const double raw_pitch_error_rad = command.pitch - current_pitch_rad;
+
+      // The image-space pitch loop exists specifically to recover from a
+      // biased absolute PnP pitch.  Compute its bounded correction before the
+      // safety gate; otherwise a large raw PnP error prevents the servo from
+      // ever becoming active.
+      bool image_servo_active = false;
+      double image_servo_pitch_correction_rad = 0.0;
+      if (image_servo_pitch_enable_ && target_locked && armor_center_valid &&
+          vision.received && camera_model.valid)
+      {
+        const double fy = camera_model.camera_matrix.at<double>(1, 1);
+        if (std::isfinite(fy) && fy > 0.0 && std::isfinite(image_servo_error_px))
+        {
+          image_servo_pitch_correction_rad =
+              image_servo_pitch_gain_ * std::atan(image_servo_error_px / fy);
+          image_servo_pitch_correction_rad = std::clamp(
+              image_servo_pitch_correction_rad, -image_servo_max_correction_rad_,
+              image_servo_max_correction_rad_);
+          image_servo_active = true;
+        }
+      }
+
+      // Keep the original yaw jump protection.  When image servo is ready,
+      // validate its already-bounded relative pitch correction instead of the
+      // absolute PnP pitch that the servo intentionally replaces.
+      const double safety_pitch_error_rad =
+          image_servo_active ? image_servo_pitch_correction_rad : raw_pitch_error_rad;
       const bool target_within_control_window =
           command_finite && vision.received &&
           std::abs(raw_yaw_error_rad) <= max_control_yaw_error_rad_ &&
-          std::abs(raw_pitch_error_rad) <= max_control_pitch_error_rad_;
+          std::abs(safety_pitch_error_rad) <= max_control_pitch_error_rad_;
       const bool actuation_allowed =
           target_locked && vision.fresh && vision.quaternion_valid && mode_allowed &&
           target_within_control_window;
@@ -619,19 +706,34 @@ namespace auto_aim_ros2
       // that the gimbal controller does not chase every frame of that noise.
       if (target_locked && target_within_control_window)
       {
-        if (!filtered_target_valid_)
+        const bool filter_was_valid = filtered_target_valid_;
+        if (!filter_was_valid)
         {
           filtered_target_yaw_rad_ = command.yaw;
-          filtered_target_pitch_rad_ = command.pitch;
-          filtered_target_valid_ = true;
         }
         else
         {
           filtered_target_yaw_rad_ += control_target_filter_alpha_ * std::remainder(
               command.yaw - filtered_target_yaw_rad_, 2.0 * CV_PI);
+        }
+
+        if (image_servo_active)
+        {
+          // Relative, bounded pitch target; this cannot command the raw PnP
+          // jump that was rejected by the safety gate above.
+          filtered_target_pitch_rad_ =
+              current_pitch_rad + image_servo_pitch_correction_rad;
+        }
+        else if (!filter_was_valid)
+        {
+          filtered_target_pitch_rad_ = command.pitch;
+        }
+        else
+        {
           filtered_target_pitch_rad_ +=
               control_target_filter_alpha_ * (command.pitch - filtered_target_pitch_rad_);
         }
+        filtered_target_valid_ = true;
       }
       else
       {
@@ -696,8 +798,9 @@ namespace auto_aim_ros2
       {
         RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "Control rejected: target jump yaw=%.2f deg pitch=%.2f deg exceeds safety window",
-            raw_yaw_error_rad * 180.0 / CV_PI, raw_pitch_error_rad * 180.0 / CV_PI);
+            "Control rejected: target jump yaw=%.2f deg pitch=%.2f deg (%s) exceeds safety window",
+            raw_yaw_error_rad * 180.0 / CV_PI, safety_pitch_error_rad * 180.0 / CV_PI,
+            image_servo_active ? "image-servo" : "PnP");
       }
 
       auto control_preview = auto_aim_interfaces::msg::RobotCtrl();
@@ -817,22 +920,7 @@ namespace auto_aim_ros2
       count.data = static_cast<int32_t>(detections.size());
       count_publisher_->publish(count);
 
-      // 装甲板中心像素坐标（预览画面）；多个检测时取画面最下方（y 最大）的一个
-      char armor_center_buf[48];
-      bool armor_center_valid = false;
-      double armor_center_x = 0.0;
-      double armor_center_y = 0.0;
-      for (const auto & armor : detections)
-      {
-        if (!armor_center_valid || armor.center.y > armor_center_y)
-        {
-          armor_center_x = armor.center.x;
-          armor_center_y = armor.center.y;
-          armor_center_valid = true;
-        }
-      }
-
-      if (publish_debug_image_)
+      if (debug_image_requested)
       {
         std::ostringstream status;
         status << "tracker=" << tracker_state
@@ -843,13 +931,18 @@ namespace auto_aim_ros2
             debug_image, status.str(), cv::Point(20, 36), cv::FONT_HERSHEY_SIMPLEX,
             0.8, cv::Scalar(0, 0, 255), 2);
 
-        // 右上角：最低装甲板中心像素坐标 + FPS（红色）
+        // 右上角：最低装甲板中心像素坐标 + 伺服误差 + FPS（红色）
         {
           std::ostringstream coord;
           if (armor_center_valid)
           {
             coord << "armor=(" << static_cast<int>(armor_center_x) << ", "
                   << static_cast<int>(armor_center_y) << ")";
+            if (image_servo_pitch_enable_)
+            {
+              coord << std::showpos << " e=" << static_cast<int>(std::lround(image_servo_error_px))
+                    << "px" << std::noshowpos;
+            }
           }
           else
           {
@@ -874,8 +967,10 @@ namespace auto_aim_ros2
               cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
         }
 
+        cv::Mat debug_output;
+        cv::resize(debug_image, debug_output, {}, 0.5, 0.5, cv::INTER_AREA);
         auto debug_message = cv_bridge::CvImage(
-                                 message->header, sensor_msgs::image_encodings::BGR8, debug_image)
+                                 message->header, sensor_msgs::image_encodings::BGR8, debug_output)
                                  .toImageMsg();
         debug_publisher_->publish(*debug_message);
       }
@@ -893,12 +988,14 @@ namespace auto_aim_ros2
       RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 1000,
           "detections=%zu valid_poses=%zu armor_center=%s tracker=%s latency=%.1f ms "
-          "camera_info=%s vision_fresh=%s control=%s fire=%d",
+          "camera_info=%s vision_fresh=%s control=%s fire=%d "
+          "servo=%s e=%.0fpx target_y=%.0f",
           detections.size(), valid_pose_count, armor_center_buf, tracker_state.c_str(), elapsed,
           camera_model.valid ? "yes" : "no",
           vision.fresh ? "yes" : "no",
           actuation_allowed && enable_control_output_ ? "active" : "safe",
-          fire_command);
+          fire_command,
+          image_servo_active ? "on" : "off", image_servo_error_px, image_servo_target_y_px_);
     }
 
     std::unique_ptr<auto_aim::YOLO> detector_;
@@ -920,6 +1017,10 @@ namespace auto_aim_ros2
     double max_control_pitch_error_rad_ = 10.0 * CV_PI / 180.0;
     double max_control_step_rad_ = 1.0 * CV_PI / 180.0;
     double control_target_filter_alpha_ = 0.25;
+    bool image_servo_pitch_enable_ = true;
+    double image_servo_target_y_px_ = 726.0;
+    double image_servo_pitch_gain_ = 1.0;
+    double image_servo_max_correction_rad_ = 3.0 * CV_PI / 180.0;
     double control_yaw_deadband_rad_ = 0.25 * CV_PI / 180.0;
     double control_pitch_deadband_rad_ = 0.20 * CV_PI / 180.0;
     bool filtered_target_valid_ = false;

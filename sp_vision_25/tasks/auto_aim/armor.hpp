@@ -91,7 +91,11 @@ struct Armor
 
   ArmorType type;
   ArmorName name;
-  ArmorPriority priority;
+  // The simple detector does not run the omniperception priority decider.
+  // Keep all detections at a deterministic default priority so Tracker's
+  // stable sort falls back to image-center distance instead of an
+  // uninitialized enum value.
+  ArmorPriority priority{ArmorPriority::fifth};
   int class_id;
   cv::Rect box;
   cv::Mat pattern;

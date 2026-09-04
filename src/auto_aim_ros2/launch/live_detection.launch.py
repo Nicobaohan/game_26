@@ -38,6 +38,11 @@ def generate_launch_description():
     control_yaw_deadband_deg = LaunchConfiguration('control_yaw_deadband_deg')
     control_pitch_deadband_deg = LaunchConfiguration(
         'control_pitch_deadband_deg')
+    image_servo_pitch_enable = LaunchConfiguration('image_servo_pitch_enable')
+    image_servo_target_y_px = LaunchConfiguration('image_servo_target_y_px')
+    image_servo_pitch_gain = LaunchConfiguration('image_servo_pitch_gain')
+    image_servo_max_correction_deg = LaunchConfiguration(
+        'image_servo_max_correction_deg')
     local_only = LaunchConfiguration('local_only')
     camera_launch = os.path.join(
         get_package_share_directory('hik_camera'), 'launch', 'hik_camera.launch.py')
@@ -69,6 +74,10 @@ def generate_launch_description():
         DeclareLaunchArgument('control_target_filter_alpha', default_value='0.25'),
         DeclareLaunchArgument('control_yaw_deadband_deg', default_value='0.25'),
         DeclareLaunchArgument('control_pitch_deadband_deg', default_value='0.20'),
+        DeclareLaunchArgument('image_servo_pitch_enable', default_value='true'),
+        DeclareLaunchArgument('image_servo_target_y_px', default_value='726.0'),
+        DeclareLaunchArgument('image_servo_pitch_gain', default_value='1.0'),
+        DeclareLaunchArgument('image_servo_max_correction_deg', default_value='3.0'),
         DeclareLaunchArgument('local_only', default_value='1'),
         SetEnvironmentVariable('ROS_LOCALHOST_ONLY', local_only),
         IncludeLaunchDescription(
@@ -118,6 +127,14 @@ def generate_launch_description():
                     control_yaw_deadband_deg, value_type=float),
                 'control_pitch_deadband_deg': ParameterValue(
                     control_pitch_deadband_deg, value_type=float),
+                'image_servo_pitch_enable': ParameterValue(
+                    image_servo_pitch_enable, value_type=bool),
+                'image_servo_target_y_px': ParameterValue(
+                    image_servo_target_y_px, value_type=float),
+                'image_servo_pitch_gain': ParameterValue(
+                    image_servo_pitch_gain, value_type=float),
+                'image_servo_max_correction_deg': ParameterValue(
+                    image_servo_max_correction_deg, value_type=float),
             }],
         ),
     ])

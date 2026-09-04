@@ -38,7 +38,9 @@ public:
 
     // Init convert param
     //初始化像素格式转换参数
-    convert_param_.enDstPixelType = PixelType_Gvsp_RGB8_Packed;
+    // The detector consumes BGR8.  Converting directly to BGR here avoids a
+    // second full-frame RGB-to-BGR conversion in cv_bridge.
+    convert_param_.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
 
     bool use_sensor_data_qos = this->declare_parameter("use_sensor_data_qos", false);
     auto qos = use_sensor_data_qos ? rmw_qos_profile_sensor_data : rmw_qos_profile_default;
@@ -69,7 +71,7 @@ public:
       RCLCPP_INFO(this->get_logger(), "Publishing image!");
 
       image_msg_.header.frame_id = "camera_optical_frame";
-      image_msg_.encoding = "rgb8";
+      image_msg_.encoding = "bgr8";
 
       while (rclcpp::ok()) {
         MV_FRAME_OUT out_frame{}; // SDK 要求输出结构的保留字段置零

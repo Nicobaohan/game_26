@@ -16,7 +16,7 @@ gpu_id: 0
 # OpenVINO fallback setting; OpenVINO's GPU target does not use the Orin GPU.
 device: CPU
 min_confidence: 0.8
-use_traditional: true
+use_traditional: false
 
 #####-----ROI-----#####
 roi:
@@ -38,19 +38,21 @@ max_side_ratio: 1.5
 max_rectangular_error: 25
 
 #####-----tracker参数-----#####
-min_detect_count: 5
+min_detect_count: 3
 max_temp_lost_count: 15
 outpost_max_temp_lost_count: 75
+max_frame_gap_s: 0.25
+max_match_distance_m: 0.8
 
 #####-----aimer参数-----#####
 # 未完成实车零偏标定前保持为 0。
 yaw_offset: 0
-pitch_offset: 3.5
+pitch_offset: 4
 comming_angle: 55
 leaving_angle: 20
 decision_speed: 7
 high_speed_delay_time: 0.0
-low_speed_delay_time: 0.0
+low_speed_delay_time: 1.0
 
 #####-----shooter参数-----#####
 first_tolerance: 3

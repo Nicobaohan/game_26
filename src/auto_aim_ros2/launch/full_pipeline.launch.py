@@ -37,6 +37,11 @@ def generate_launch_description():
     control_yaw_deadband_deg = LaunchConfiguration('control_yaw_deadband_deg')
     control_pitch_deadband_deg = LaunchConfiguration(
         'control_pitch_deadband_deg')
+    image_servo_pitch_enable = LaunchConfiguration('image_servo_pitch_enable')
+    image_servo_target_y_px = LaunchConfiguration('image_servo_target_y_px')
+    image_servo_pitch_gain = LaunchConfiguration('image_servo_pitch_gain')
+    image_servo_max_correction_deg = LaunchConfiguration(
+        'image_servo_max_correction_deg')
     start_serial = LaunchConfiguration('start_serial')
     local_only = LaunchConfiguration('local_only')
 
@@ -71,6 +76,10 @@ def generate_launch_description():
         DeclareLaunchArgument('control_target_filter_alpha', default_value='0.25'),
         DeclareLaunchArgument('control_yaw_deadband_deg', default_value='0.25'),
         DeclareLaunchArgument('control_pitch_deadband_deg', default_value='0.20'),
+        DeclareLaunchArgument('image_servo_pitch_enable', default_value='true'),
+        DeclareLaunchArgument('image_servo_target_y_px', default_value='726.0'),
+        DeclareLaunchArgument('image_servo_pitch_gain', default_value='1.0'),
+        DeclareLaunchArgument('image_servo_max_correction_deg', default_value='3.0'),
         DeclareLaunchArgument('start_serial', default_value='false'),
         DeclareLaunchArgument('local_only', default_value='1'),
         SetEnvironmentVariable('ROS_LOCALHOST_ONLY', local_only),
@@ -95,6 +104,10 @@ def generate_launch_description():
                 'control_target_filter_alpha': control_target_filter_alpha,
                 'control_yaw_deadband_deg': control_yaw_deadband_deg,
                 'control_pitch_deadband_deg': control_pitch_deadband_deg,
+                'image_servo_pitch_enable': image_servo_pitch_enable,
+                'image_servo_target_y_px': image_servo_target_y_px,
+                'image_servo_pitch_gain': image_servo_pitch_gain,
+                'image_servo_max_correction_deg': image_servo_max_correction_deg,
                 'local_only': local_only,
             }.items(),
         ),
