@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <iomanip>
 #include <list>
@@ -436,6 +437,19 @@ namespace auto_aim_ros2
     {
       const auto started = std::chrono::steady_clock::now();
 
+      // 帧率统计（指数平滑），用于预览画面左下角显示
+      if (last_frame_at_ != std::chrono::steady_clock::time_point{})
+      {
+        const double frame_dt =
+            std::chrono::duration<double>(started - last_frame_at_).count();
+        if (frame_dt > 0.0 && frame_dt < 1.0)
+        {
+          const double instant_fps = 1.0 / frame_dt;
+          fps_ = fps_ > 0.0 ? 0.9 * fps_ + 0.1 * instant_fps : instant_fps;
+        }
+      }
+      last_frame_at_ = started;
+
       cv_bridge::CvImageConstPtr image;
       try
       {
@@ -803,6 +817,21 @@ namespace auto_aim_ros2
       count.data = static_cast<int32_t>(detections.size());
       count_publisher_->publish(count);
 
+      // 装甲板中心像素坐标（预览画面）；多个检测时取画面最下方（y 最大）的一个
+      char armor_center_buf[48];
+      bool armor_center_valid = false;
+      double armor_center_x = 0.0;
+      double armor_center_y = 0.0;
+      for (const auto & armor : detections)
+      {
+        if (!armor_center_valid || armor.center.y > armor_center_y)
+        {
+          armor_center_x = armor.center.x;
+          armor_center_y = armor.center.y;
+          armor_center_valid = true;
+        }
+      }
+
       if (publish_debug_image_)
       {
         std::ostringstream status;
@@ -812,18 +841,60 @@ namespace auto_aim_ros2
                << " fire=" << fire_command;
         cv::putText(
             debug_image, status.str(), cv::Point(20, 36), cv::FONT_HERSHEY_SIMPLEX,
-            0.8, cv::Scalar(0, 255, 255), 2);
+            0.8, cv::Scalar(0, 0, 255), 2);
+
+        // 右上角：最低装甲板中心像素坐标 + FPS（红色）
+        {
+          std::ostringstream coord;
+          if (armor_center_valid)
+          {
+            coord << "armor=(" << static_cast<int>(armor_center_x) << ", "
+                  << static_cast<int>(armor_center_y) << ")";
+          }
+          else
+          {
+            coord << "armor=none";
+          }
+          std::ostringstream fps_text;
+          fps_text << "fps=" << std::fixed << std::setprecision(1) << fps_;
+
+          int baseline = 0;
+          const cv::Size coord_size = cv::getTextSize(
+              coord.str(), cv::FONT_HERSHEY_SIMPLEX, 0.8, 2, &baseline);
+          const cv::Size fps_size = cv::getTextSize(
+              fps_text.str(), cv::FONT_HERSHEY_SIMPLEX, 0.8, 2, &baseline);
+
+          cv::putText(
+              debug_image, coord.str(),
+              cv::Point(debug_image.cols - coord_size.width - 20, 36),
+              cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
+          cv::putText(
+              debug_image, fps_text.str(),
+              cv::Point(debug_image.cols - fps_size.width - 20, 36 + coord_size.height + 12),
+              cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
+        }
+
         auto debug_message = cv_bridge::CvImage(
                                  message->header, sensor_msgs::image_encodings::BGR8, debug_image)
                                  .toImageMsg();
         debug_publisher_->publish(*debug_message);
       }
+      if (armor_center_valid)
+      {
+        std::snprintf(
+            armor_center_buf, sizeof(armor_center_buf), "(%.0f, %.0f)", armor_center_x,
+            armor_center_y);
+      }
+      else
+      {
+        std::snprintf(armor_center_buf, sizeof(armor_center_buf), "none");
+      }
 
       RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 1000,
-          "detections=%zu valid_poses=%zu tracker=%s latency=%.1f ms "
+          "detections=%zu valid_poses=%zu armor_center=%s tracker=%s latency=%.1f ms "
           "camera_info=%s vision_fresh=%s control=%s fire=%d",
-          detections.size(), valid_pose_count, tracker_state.c_str(), elapsed,
+          detections.size(), valid_pose_count, armor_center_buf, tracker_state.c_str(), elapsed,
           camera_model.valid ? "yes" : "no",
           vision.fresh ? "yes" : "no",
           actuation_allowed && enable_control_output_ ? "active" : "safe",
@@ -838,6 +909,8 @@ namespace auto_aim_ros2
     bool enable_control_output_ = false;
     bool require_auto_aim_mode_ = true;
     int frame_count_ = 0;
+    std::chrono::steady_clock::time_point last_frame_at_{};
+    double fps_ = 0.0;
     double small_armor_width_m_ = 0.135;
     double big_armor_width_m_ = 0.230;
     double armor_height_m_ = 0.056;

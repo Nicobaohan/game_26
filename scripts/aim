@@ -20,6 +20,8 @@ fi
 AUTOAIM_CAMERA_INFO_URL="${AUTOAIM_CAMERA_INFO_URL:-package://hik_camera/config/camera_info_vehicle.yaml}"
 AUTOAIM_CONFIG_PATH="${AUTOAIM_CONFIG_PATH:-configs/school.yaml}"
 AUTOAIM_LOCAL_ONLY="${AUTOAIM_LOCAL_ONLY:-1}"
+AUTOAIM_INFER_BACKEND="${AUTOAIM_INFER_BACKEND:-openvino}"
+AUTOAIM_TRT_ONNX_PATH="${AUTOAIM_TRT_ONNX_PATH:-}"
 AUTOAIM_BOARD_SIZE="${AUTOAIM_BOARD_SIZE:-11x8}"
 AUTOAIM_SQUARE_SIZE="${AUTOAIM_SQUARE_SIZE:-0.020}"
 AUTOAIM_CAMERA_NAME="${AUTOAIM_CAMERA_NAME:-narrow_stereo}"
@@ -127,9 +129,46 @@ check_not_running() {
   fi
 }
 
+ensure_trt_engine() {
+  [[ "${AUTOAIM_INFER_BACKEND}" == 'trt' ]] || return 0
+
+  local trtexec='/usr/src/tensorrt/bin/trtexec'
+  local engine="${PROJECT_ROOT}/sp_vision_25/assets/yolov5_0708_fp16.engine"
+  if [[ -z "${AUTOAIM_TRT_ONNX_PATH}" || ! -f "${AUTOAIM_TRT_ONNX_PATH}" ]]; then
+    echo "TensorRT source ONNX not found: ${AUTOAIM_TRT_ONNX_PATH:-<unset>}" >&2
+    exit 12
+  fi
+  if [[ ! -x "${trtexec}" ]]; then
+    echo "TensorRT builder not found: ${trtexec}" >&2
+    exit 13
+  fi
+  if [[ -s "${engine}" && "${engine}" -nt "${AUTOAIM_TRT_ONNX_PATH}" ]]; then
+    echo "TensorRT engine: ${engine}"
+    return 0
+  fi
+
+  local temporary_engine="${engine}.building.$$"
+  rm -f "${temporary_engine}"
+  echo "Building TensorRT FP16 engine; first build can take several minutes."
+  if ! "${trtexec}" \
+      --onnx="${AUTOAIM_TRT_ONNX_PATH}" \
+      --saveEngine="${temporary_engine}" \
+      --fp16 \
+      --inputIOFormats=fp16:chw \
+      --outputIOFormats=fp32:chw \
+      --skipInference; then
+    rm -f "${temporary_engine}"
+    echo "TensorRT engine build failed." >&2
+    exit 14
+  fi
+  mv -f "${temporary_engine}" "${engine}"
+  echo "TensorRT engine ready: ${engine}"
+}
+
 build_workspace() {
   check_not_running
   source_runtime
+  ensure_trt_engine
   mkdir -p "${BUILD_ROOT}/build" "${BUILD_ROOT}/install" "${BUILD_ROOT}/log"
 
   echo "Project: ${PROJECT_ROOT}"
@@ -253,6 +292,7 @@ start_autoaim() {
   check_not_running
   check_camera_config
   source_install
+  ensure_trt_engine
 
   if [[ ! -e /dev/robomaster ]]; then
     echo "Serial device missing: /dev/robomaster" >&2
@@ -343,6 +383,11 @@ show_status() {
     echo 'Auto-aim:     stopped'
   fi
   echo "Calibration:  ${AUTOAIM_CAMERA_INFO_URL}"
+  echo "Backend:      ${AUTOAIM_INFER_BACKEND}"
+  if [[ "${AUTOAIM_INFER_BACKEND}" == 'trt' ]]; then
+    local engine="${PROJECT_ROOT}/sp_vision_25/assets/yolov5_0708_fp16.engine"
+    [[ -s "${engine}" ]] && echo "TRT engine:    ready" || echo "TRT engine:    missing"
+  fi
 }
 
 command="${1:-}"

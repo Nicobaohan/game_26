@@ -2,8 +2,10 @@
   ros__parameters:
     camera_name: narrow_stereo
 
-    exposure_time: 14000 #2000
-    gain: 15.0
+    # Keep the ROS camera node aligned with configs/school.yaml.  A 14 ms
+    # exposure smears moving armor corners and destabilizes PnP/tracking.
+    exposure_time: 2500
+    gain: 16.9
     balance_ratio_r: 1314.0
     balance_ratio_g: 1024.0
     balance_ratio_b: 2800.0
